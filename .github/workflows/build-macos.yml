@@ -5,21 +5,22 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build-macos:
-    runs-on: macos-14   # Apple Silicon M1 runner
-    
+    runs-on: macos-14
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Install dependencies
-        run: |
-          brew install cmake ninja
+        run: brew install cmake ninja
 
       - name: Clone JUCE
-        run: |
-          git clone --depth=1 https://github.com/juce-framework/JUCE.git ../JUCE
+        run: git clone --depth=1 https://github.com/juce-framework/JUCE.git ../JUCE
 
       - name: Configure CMake
         run: |
@@ -30,145 +31,57 @@ jobs:
             -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
 
       - name: Build plugin
-        run: |
-          cmake --build build --parallel --config Release
+        run: cmake --build build --parallel --config Release
 
-      - name: Find built artifacts
+      - name: Create installer zip
         run: |
-          find build -name "*.vst3" -o -name "*.component" 2>/dev/null | head -20
-
-      - name: Create installer package
-        run: |
-          # Create staging directories
-          mkdir -p staging/VST3
-          mkdir -p staging/AU
-          mkdir -p staging/Scripts
-          
-          # Copy VST3
-          VST3=$(find build -name "*.vst3" -type d | head -1)
-          if [ -n "$VST3" ]; then
-            cp -r "$VST3" staging/VST3/
-          fi
-          
-          # Copy AU
-          AU=$(find build -name "*.component" -type d | head -1)
-          if [ -n "$AU" ]; then
-            cp -r "$AU" staging/AU/
-          fi
-          
-          # Create install script
-          cat > staging/Scripts/postinstall << 'SCRIPT'
-          #!/bin/bash
-          mkdir -p "$HOME/Library/Audio/Plug-Ins/VST3"
-          mkdir -p "$HOME/Library/Audio/Plug-Ins/Components"
-          
-          if [ -d "/Library/Application Support/VocalOne/VST3/VocalOne.vst3" ]; then
-            cp -r "/Library/Application Support/VocalOne/VST3/VocalOne.vst3" \
-                  "$HOME/Library/Audio/Plug-Ins/VST3/"
-          fi
-          if [ -d "/Library/Application Support/VocalOne/AU/VocalOne.component" ]; then
-            cp -r "/Library/Application Support/VocalOne/AU/VocalOne.component" \
-                  "$HOME/Library/Audio/Plug-Ins/Components/"
-          fi
-          exit 0
-          SCRIPT
-          chmod +x staging/Scripts/postinstall
-          
-          # Build .pkg
-          pkgbuild \
-            --root staging/VST3 \
-            --identifier com.vocalone.vst3 \
-            --version 1.0.0 \
-            --install-location "/Library/Application Support/VocalOne/VST3" \
-            --scripts staging/Scripts \
-            VocalOne_VST3.pkg || echo "pkgbuild failed, creating zip instead"
-          
-          # Always create a zip as fallback (direct drag & drop)
           mkdir -p installer
-          
+
           VST3=$(find build -name "*.vst3" -type d | head -1)
           AU=$(find build -name "*.component" -type d | head -1)
-          
-          if [ -n "$VST3" ]; then
-            cp -r "$VST3" installer/
-          fi
-          if [ -n "$AU" ]; then
-            cp -r "$AU" installer/
-          fi
-          
-          # Create a simple install script inside the zip
-          cat > installer/INSTALLA.command << 'INSTALL'
-          #!/bin/bash
-          DIR="$(cd "$(dirname "$0")" && pwd)"
-          mkdir -p "$HOME/Library/Audio/Plug-Ins/VST3"
-          mkdir -p "$HOME/Library/Audio/Plug-Ins/Components"
-          
-          VST3=$(find "$DIR" -name "*.vst3" -maxdepth 1 | head -1)
-          AU=$(find "$DIR" -name "*.component" -maxdepth 1 | head -1)
-          
-          if [ -n "$VST3" ]; then
-            cp -r "$VST3" "$HOME/Library/Audio/Plug-Ins/VST3/"
-            echo "✅ VST3 installato!"
-          fi
-          if [ -n "$AU" ]; then
-            cp -r "$AU" "$HOME/Library/Audio/Plug-Ins/Components/"
-            echo "✅ Audio Unit installato!"
-          fi
-          
-          echo ""
-          echo "🎤 VocalOne installato con successo!"
-          echo "Riavvia il tuo DAW (Logic Pro, Ableton, Reaper...)"
-          echo "Premi INVIO per chiudere..."
-          read
-          INSTALL
-          chmod +x installer/INSTALLA.command
-          
-          # Zip the installer
-          cd installer
-          zip -r ../VocalOne-macOS-1.0.0.zip .
-          cd ..
-          
-          echo "=== Installer created ==="
-          ls -lh VocalOne-macOS-1.0.0.zip 2>/dev/null || echo "zip not found"
-          ls -lh VocalOne_VST3.pkg 2>/dev/null || echo "pkg not found"
 
-      - name: Upload installer as release artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: VocalOne-macOS-Installer
-          path: |
-            VocalOne-macOS-1.0.0.zip
-            VocalOne_VST3.pkg
-          if-no-files-found: warn
+          [ -n "$VST3" ] && cp -r "$VST3" installer/
+          [ -n "$AU"   ] && cp -r "$AU"   installer/
+
+          cat > installer/INSTALLA.command << 'INSTALL'
+#!/bin/bash
+DIR="$(cd "$(dirname "$0")" && pwd)"
+mkdir -p "$HOME/Library/Audio/Plug-Ins/VST3"
+mkdir -p "$HOME/Library/Audio/Plug-Ins/Components"
+
+VST3=$(find "$DIR" -name "*.vst3" -maxdepth 1 | head -1)
+AU=$(find "$DIR"  -name "*.component" -maxdepth 1 | head -1)
+
+[ -n "$VST3" ] && cp -r "$VST3" "$HOME/Library/Audio/Plug-Ins/VST3/"  && echo "✅ VST3 installato!"
+[ -n "$AU"   ] && cp -r "$AU"   "$HOME/Library/Audio/Plug-Ins/Components/" && echo "✅ Audio Unit installato!"
+
+echo ""
+echo "🎤 VocalOne installato! Riavvia il tuo DAW."
+echo "Premi INVIO per chiudere..."
+read
+INSTALL
+          chmod +x installer/INSTALLA.command
+
+          cd installer && zip -r ../VocalOne-macOS-1.0.0.zip . && cd ..
+          echo "=== ZIP ===" && ls -lh VocalOne-macOS-1.0.0.zip
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
-        if: github.ref == 'refs/heads/main'
         with:
           tag_name: v1.0.0
           name: "VocalOne v1.0.0 — One Plugin. Every Vocal."
           body: |
             ## 🎤 VocalOne v1.0.0
-            
-            **Scarica e installa VocalOne sul tuo Mac:**
-            
+
+            **Come installare:**
             1. Scarica `VocalOne-macOS-1.0.0.zip`
-            2. Decomprimi il file
-            3. Fai doppio click su `INSTALLA.command`
+            2. Decomprimi
+            3. Doppio click su `INSTALLA.command`
             4. Riavvia il DAW
-            
-            ### Moduli inclusi
-            - AI Analyzer · Smart Tune · AI EQ · AI Compressor
-            - AI DeEsser · AI Gate · Noise Removal · Saturation
-            - Harmonic Exciter · Fresh Air · Delay · Reverb
-            - Doubler · Chorus · Stereo Width · Final Limiter
-            - AI Assistant · Smart Preset
-            
-            **Compatibile con:** Logic Pro, Ableton Live, Pro Tools, Reaper, FL Studio
-            **Architetture:** Apple Silicon (M1/M2/M3/M4) + Intel (Universal Binary)
-          files: |
-            VocalOne-macOS-1.0.0.zip
-            VocalOne_VST3.pkg
+
+            **Compatibile con:** Logic Pro · Ableton · Pro Tools · Reaper · FL Studio
+            **Architetture:** Apple Silicon M1/M2/M3/M4 + Intel (Universal Binary)
+          files: VocalOne-macOS-1.0.0.zip
           draft: false
           prerelease: false
         env:
