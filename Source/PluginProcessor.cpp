@@ -48,10 +48,17 @@ juce::AudioProcessorValueTreeState::ParameterLayout VocalOneAudioProcessor::crea
     p.push_back (std::make_unique<APC> (pid ("tune_key"),      "Tune Key",
         juce::StringArray { "C","C#","D","D#","E","F","F#","G","G#","A","A#","B" }, 0));
     p.push_back (std::make_unique<APC> (pid ("tune_scale"),    "Tune Scale",
-        juce::StringArray { "Chromatic","Major","Minor","Major Pentatonic","Minor Pentatonic" }, 0));
+        juce::StringArray { "Chromatic","Major","Minor","Major Pentatonic","Minor Pentatonic",
+                             "Blues","Dorian","Phrygian","Lydian","Mixolydian",
+                             "Harmonic Minor","Melodic Minor","Diminished","Whole Tone",
+                             "Arabic","Japanese" }, 0));
     p.push_back (std::make_unique<APF> (pid ("tune_speed"),    "Tune Speed", NRange (0.0f, 1.0f, 0.01f), 0.2f));
     p.push_back (std::make_unique<APF> (pid ("tune_strength"), "Tune Strength", NRange (0.0f, 1.0f, 0.01f), 1.0f));
     p.push_back (std::make_unique<APB> (pid ("tune_formant"),  "Tune Formant", true));
+    p.push_back (std::make_unique<APB> (pid ("tune_vibrato"),  "Tune Vibrato Preserve", true));
+    p.push_back (std::make_unique<APF> (pid ("tune_humanize"), "Tune Humanize", NRange (0.0f, 1.0f, 0.01f), 0.0f));
+    p.push_back (std::make_unique<APC> (pid ("tune_profile"),  "Tune Profile",
+        juce::StringArray { "Tight","Natural","Loose" }, 1));
 
     // ---- EQ ---------------------------------------------------------------
     p.push_back (std::make_unique<APB> (pid ("eq_on"),     "EQ On", true));
@@ -234,7 +241,10 @@ void VocalOneAudioProcessor::syncParametersToModules()
         smartTune.setParameters (getP (a, "tune_on") > 0.5f, keyChoice,
                                  (SmartTune::Scale) scaleChoice,
                                  getP (a, "tune_speed"), getP (a, "tune_strength"),
-                                 getP (a, "tune_formant") > 0.5f);
+                                 getP (a, "tune_formant") > 0.5f,
+                                 getP (a, "tune_vibrato") > 0.5f,
+                                 getP (a, "tune_humanize"),
+                                 (SmartTune::Profile) (int) getP (a, "tune_profile"));
         smartTune.setDetectedF0 (analyzer.getCurrentF0());
     }
 

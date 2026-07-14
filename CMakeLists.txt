@@ -129,7 +129,7 @@ target_include_directories(VocalOne PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/Source)
 
 # ---------------------------------------------------------------------------
-# Link JUCE modules
+# Link JUCE modules + system libs
 # ---------------------------------------------------------------------------
 target_link_libraries(VocalOne PRIVATE
     juce::juce_audio_utils
@@ -140,4 +140,5 @@ target_link_libraries(VocalOne PRIVATE
     PUBLIC
     juce::juce_recommended_config_flags
     juce::juce_recommended_lto_flags
-    juce::juce_recommended_warning_flags)
+    juce::juce_recommended_warning_flags
+    curl)

@@ -4,6 +4,7 @@ AIAnalyzer::AIAnalyzer()
 {
     fftScratch.assign (fftSize * 2, 0.0f);
     monoAccum.assign (fftSize, 0.0f);
+    pitchRingBuffer.assign (pitchRingSize, 0.0f);
 }
 
 void AIAnalyzer::prepare (double sampleRate, int maximumBlockSize, int /*numChannels*/)
@@ -26,7 +27,10 @@ void AIAnalyzer::reset()
     chroma.fill (0.0f);
     std::fill (monoAccum.begin(), monoAccum.end(), 0.0f);
     monoAccumWrite = 0;
-
+    std::fill (pitchRingBuffer.begin(), pitchRingBuffer.end(), 0.0f);
+    pitchRingWrite = 0;
+    f0Confidence = 0.0f;
+    f0Stable = 0.0f;
     f0Hz.store (0.0f);
     sibDb.store (-90.0f);
     rmsDbAtomic.store (-60.0f);
@@ -86,13 +90,36 @@ void AIAnalyzer::analyze (const juce::AudioBuffer<float>& buffer)
         }
     }
 
-    // ---- Pitch (YIN on the block) -----------------------------------------
+    // ---- Pitch tracking with ring buffer smoothing --------------------------
     const float f0 = detectPitchYIN (mono.data(), numSmp);
-    if (f0 > 50.0f && f0 < 1200.0f && rmsDb > -45.0f)
+    if (f0 > 50.0f && f0 < 1200.0f && rmsDb > -50.0f)
     {
-        f0Hz.store (f0);
-        if (f0MinRunning <= 0.0f || f0 < f0MinRunning) f0MinRunning = f0;
-        if (f0 > f0MaxRunning)                         f0MaxRunning = f0;
+        // Add to ring buffer for median smoothing
+        pitchRingBuffer[(size_t) pitchRingWrite] = f0;
+        pitchRingWrite = (pitchRingWrite + 1) % pitchRingSize;
+
+        // Calculate median of recent pitches for stability
+        std::vector<float> recent (pitchRingBuffer.begin(), pitchRingBuffer.end());
+        std::sort (recent.begin(), recent.end());
+        const float medianF0 = recent[recent.size() / 2];
+
+        // Confidence based on how close current is to median
+        const float diff = std::abs (f0 - medianF0) / (medianF0 + 1.0e-6f);
+        f0Confidence = f0Confidence * 0.9f + (1.0f - juce::jlimit (0.0f, 1.0f, diff)) * 0.1f;
+
+        // Stable pitch only publishes when confidence is high enough
+        f0Stable = f0Stable * 0.85f + medianF0 * 0.15f;
+
+        if (f0Confidence > 0.5f)
+        {
+            f0Hz.store (f0Stable);
+            if (f0MinRunning <= 0.0f || f0 < f0MinRunning) f0MinRunning = f0;
+            if (f0 > f0MaxRunning)                         f0MaxRunning = f0;
+        }
+    }
+    else
+    {
+        f0Confidence *= 0.95f; // decay confidence when no pitch detected
     }
 
     // ---- Tempo (spectral flux -> onset envelope -> autocorrelation) -------
@@ -133,8 +160,8 @@ void AIAnalyzer::analyze (const juce::AudioBuffer<float>& buffer)
 
     // ---- Gender / genre heuristics ----------------------------------------
     int gender = 0;
-    if (f0 > 60.0f)
-        gender = (f0 < 165.0f) ? 1 : 2;   // < ~E3 male, else female
+    if (f0Stable > 60.0f)
+        gender = (f0Stable < 170.0f) ? 1 : 2;   // < ~F3 male, else female (more accurate split)
 
     int genre = 0;
     const float crest = peakDb - rmsDb;
@@ -168,6 +195,7 @@ void AIAnalyzer::analyze (const juce::AudioBuffer<float>& buffer)
     snap.brightness   = centroid;
     snap.genderGuess  = gender;
     snap.genreGuess   = genre;
+    snap.f0Confidence = f0Confidence;
 
     const juce::SpinLock::ScopedLockType sl (snapshotLock);
     current = snap;
@@ -238,7 +266,7 @@ void AIAnalyzer::updateChroma (const float* monoRing, int numSamples)
 float AIAnalyzer::detectPitchYIN (const float* mono, int numSamples)
 {
     // Classic YIN difference function on a limited lag range.
-    const int maxLag = juce::jmin (numSamples / 2, (int) (sr / 60.0));   // down to 60 Hz
+    const int maxLag = juce::jmin (numSamples / 2, (int) (sr / 50.0));   // down to 50 Hz
     const int minLag = juce::jmax (2, (int) (sr / 1200.0));              // up to 1200 Hz
     if (maxLag <= minLag)
         return 0.0f;
@@ -261,15 +289,17 @@ float AIAnalyzer::detectPitchYIN (const float* mono, int numSamples)
     for (int tau = minLag; tau <= maxLag; ++tau)
     {
         running += d[(size_t) tau];
-        cmnd[(size_t) tau] = d[(size_t) tau] * (float) (tau - minLag + 1) / juce::jmax (running, 1.0e-9f);
+        if (running > 1.0e-9f)
+            cmnd[(size_t) tau] = d[(size_t) tau] * (float) (tau - minLag + 1) / running;
     }
 
-    const float threshold = 0.15f;
+    const float threshold = 0.12f;
     int bestTau = -1;
-    for (int tau = minLag + 1; tau < maxLag; ++tau)
+    for (int tau = minLag + 1; tau < maxLag - 1; ++tau)
     {
-        if (cmnd[(size_t) tau] < threshold
-            && cmnd[(size_t) tau] < cmnd[(size_t) (tau + 1)])
+        if (cmnd[(size_t) tau] < threshold &&
+            cmnd[(size_t) tau] < cmnd[(size_t) (tau - 1)] &&
+            cmnd[(size_t) tau] < cmnd[(size_t) (tau + 1)])
         {
             bestTau = tau;
             break;
@@ -277,7 +307,6 @@ float AIAnalyzer::detectPitchYIN (const float* mono, int numSamples)
     }
     if (bestTau < 0)
     {
-        // fall back to global minimum
         float best = 1.0e9f;
         for (int tau = minLag; tau <= maxLag; ++tau)
             if (cmnd[(size_t) tau] < best) { best = cmnd[(size_t) tau]; bestTau = tau; }
@@ -292,9 +321,9 @@ float AIAnalyzer::detectPitchYIN (const float* mono, int numSamples)
         const float s0 = cmnd[(size_t) (bestTau - 1)];
         const float s1 = cmnd[(size_t) bestTau];
         const float s2 = cmnd[(size_t) (bestTau + 1)];
-        const float denom = (2.0f * (2.0f * s1 - s2 - s0));
+        const float denom = 2.0f * (2.0f * s1 - s2 - s0);
         if (std::abs (denom) > 1.0e-9f)
-            betterTau = bestTau + (s2 - s0) / denom;
+            betterTau = (float) bestTau + (s2 - s0) / denom;
     }
 
     return (float) sr / betterTau;

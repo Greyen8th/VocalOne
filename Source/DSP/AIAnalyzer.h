@@ -21,6 +21,7 @@
       - dynamic range
       - sibilance energy (5-9 kHz)
       - mic distance estimate       (LF proximity vs HF ratio)
+      - pitch confidence            (YIN aperiodicity + median stability)
 
     The analysis is intentionally lightweight so it can run in real time on the
     audio thread; results are published through lock-free atomics that the GUI
@@ -59,6 +60,7 @@ public:
         float  brightness      = 0.5f;   // spectral centroid normalised
         int    genderGuess     = 0;      // 0 unknown, 1 male, 2 female
         int    genreGuess      = 0;      // index into genre table
+        float  f0Confidence    = 0.0f;   // 0..1 how stable the pitch is
     };
 
     Snapshot getSnapshot() const noexcept;
@@ -88,6 +90,13 @@ private:
     float  centroid        = 0.5f;
     float  f0MinRunning    = 0.0f;
     float  f0MaxRunning    = 0.0f;
+
+    // Pitch tracking with ring buffer smoothing
+    static constexpr int pitchRingSize = 8;
+    std::vector<float> pitchRingBuffer;
+    int    pitchRingWrite = 0;
+    float  f0Confidence = 0.0f;
+    float  f0Stable = 0.0f;
 
     // Simple onset/tempo tracking
     std::array<float, 512> onsetEnv {};

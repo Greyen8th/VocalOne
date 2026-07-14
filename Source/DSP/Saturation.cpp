@@ -5,9 +5,11 @@ void Saturation::prepare (double sampleRate, int maxBlock, int numChannels)
     sr = sampleRate;
     const int ch = juce::jmax (1, numChannels);
 
+    // 4x oversampling for very low aliasing even at high drive
     oversampler = std::make_unique<juce::dsp::Oversampling<float>> (
-        (size_t) ch, 1,
-        juce::dsp::Oversampling<float>::filterHalfBandPolyphaseIIR);
+        (size_t) ch, 2,
+        juce::dsp::Oversampling<float>::filterHalfBandPolyphaseIIR,
+        true, true); // 4x total (2 stages of 2x)
     oversampler->initProcessing ((size_t) maxBlock);
 
     juce::dsp::ProcessSpec spec { sampleRate, (juce::uint32) maxBlock, 1 };
@@ -30,47 +32,86 @@ void Saturation::setParameters (bool enabled, Model m, float drive01, float mix0
     drive = juce::jlimit (0.0f, 1.0f, drive01);
     mix = juce::jlimit (0.0f, 1.0f, mix01);
 
-    // Tone tilt per model.
-    float shelfFreq = 6000.0f, shelfGainDb = 0.0f;
+    // Tone shaping per model: more sophisticated than just a shelf
+    float toneFreq = 3000.0f, toneQ = 0.7f;
+    toneGain = 1.0f;
     switch (model)
     {
-        case Model::tube:    shelfFreq = 5000.0f; shelfGainDb = 2.0f;  break;   // warm-bright
-        case Model::tape:    shelfFreq = 8000.0f; shelfGainDb = -2.0f; break;   // HF roll-off
-        case Model::vintage: shelfFreq = 4000.0f; shelfGainDb = -3.0f; break;
-        case Model::warm:    shelfFreq = 3000.0f; shelfGainDb = -2.5f; break;
-        case Model::digital: shelfFreq = 9000.0f; shelfGainDb = 1.0f;  break;
+        case Model::tube:    toneFreq = 4500.0f; toneQ = 0.8f; toneGain = 1.3f; break; // warm + slight HF boost
+        case Model::tape:    toneFreq = 5000.0f; toneQ = 0.5f; toneGain = 0.85f; break; // gentle HF roll-off
+        case Model::vintage: toneFreq = 3500.0f; toneQ = 0.6f; toneGain = 0.75f; break; // darker, more lo-fi
+        case Model::warm:    toneFreq = 2500.0f; toneQ = 0.7f; toneGain = 0.9f; break; // very smooth, warm
+        case Model::digital: toneFreq = 8000.0f; toneQ = 0.7f; toneGain = 1.15f; break; // bright, aggressive
     }
-    auto coeffs = juce::dsp::IIR::Coefficients<float>::makeHighShelf (
-        sr, shelfFreq, 0.7f, juce::Decibels::decibelsToGain (shelfGainDb));
+    auto coeffs = juce::dsp::IIR::Coefficients<float>::makePeakFilter (sr, toneFreq, toneQ, toneGain);
     *toneL.coefficients = *coeffs;
     *toneR.coefficients = *coeffs;
 }
 
-float Saturation::shape (float x) const
+float Saturation::tubeShape (float x) const
 {
+    // Asymmetric triode soft clip: adds even harmonics
     const float d = 1.0f + drive * 9.0f;   // 1..10
     const float xd = x * d;
+    // Even-harmonic asymmetry
+    const float asym = 0.12f * drive;
+    return std::tanh (xd + asym * xd * xd) / d;
+}
+
+float Saturation::tapeShape (float x) const
+{
+    // Odd-harmonic compression with soft knee
+    const float d = 1.0f + drive * 8.0f;
+    const float xd = x * d;
+    // Tape-like saturation: compressive nonlinearity
+    const float y = xd / (1.0f + std::abs (xd) + 0.1f * xd * xd);
+    return y * juce::jlimit (0.8f, 1.0f, 1.0f - drive * 0.1f); // slight gain reduction at high drive
+}
+
+float Saturation::vintageShape (float x) const
+{
+    // Arctan with drive, but with more warmth
+    const float d = 1.0f + drive * 7.0f;
+    const float xd = x * d;
+    const float y = (2.0f / juce::MathConstants<float>::pi) * std::atan (xd * 0.8f);
+    return y / d * 1.1f; // slight makeup gain
+}
+
+float Saturation::warmShape (float x) const
+{
+    // Cubic soft clip with very smooth transition
+    const float d = 1.0f + drive * 6.0f;
+    float xd = x * d;
+    if (xd > 1.0f) xd = 1.0f;
+    else if (xd < -1.0f) xd = -1.0f;
+    return (xd - (xd * xd * xd) / 3.0f) * 1.5f / d;
+}
+
+float Saturation::digitalShape (float x) const
+{
+    // Hard-ish clip with aggressive drive
+    const float d = 1.0f + drive * 12.0f;
+    const float xd = x * d;
+    float y = juce::jlimit (-0.85f, 0.85f, xd);
+    // Add a bit of foldback distortion at high drive
+    if (drive > 0.7f)
+    {
+        const float fold = (std::abs (xd) - 0.85f) * (drive - 0.7f) * 3.33f;
+        if (fold > 0.0f)
+            y -= juce::jlimit (-0.3f, 0.3f, fold) * ((xd >= 0.0f) ? 1.0f : -1.0f);
+    }
+    return y / d;
+}
+
+float Saturation::shape (float x) const
+{
     switch (model)
     {
-        case Model::tube:
-            // asymmetric soft clip (adds even harmonics)
-            return std::tanh (xd + 0.15f * xd * xd) / d;
-        case Model::tape:
-            // odd-harmonic soft compression
-            return (xd / (1.0f + std::abs (xd))) ;
-        case Model::vintage:
-            // arctan drive
-            return (2.0f / juce::MathConstants<float>::pi) * std::atan (xd);
-        case Model::warm:
-            // cubic soft clip
-            {
-                float y = xd;
-                if (y > 1.0f) y = 1.0f; else if (y < -1.0f) y = -1.0f;
-                return (y - (y * y * y) / 3.0f) * 1.5f / d;
-            }
-        case Model::digital:
-            // hard-ish clip
-            return juce::jlimit (-0.8f, 0.8f, xd) / d;
+        case Model::tube:    return tubeShape (x);
+        case Model::tape:    return tapeShape (x);
+        case Model::vintage: return vintageShape (x);
+        case Model::warm:    return warmShape (x);
+        case Model::digital: return digitalShape (x);
     }
     return x;
 }
@@ -98,7 +139,7 @@ void Saturation::process (juce::AudioBuffer<float>& buffer)
 
     oversampler->processSamplesDown (block);
 
-    // tone + wet/dry mix
+    // Tone shaping + wet/dry mix
     for (int ch = 0; ch < numCh; ++ch)
     {
         auto* w = buffer.getWritePointer (ch);

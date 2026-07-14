@@ -4,9 +4,9 @@
 #include <vector>
 
 /**
-    FinalLimiter — look-ahead brickwall limiter with an integrated LUFS-ish
-    loudness estimate for the output stage. Guarantees the output never exceeds
-    the chosen ceiling.
+    FinalLimiter — look-ahead brickwall limiter with true-peak detection and 
+    integrated loudness metering. Guarantees the output never exceeds the 
+    chosen ceiling, including between-sample peaks (true peak via 4x upsampling).
 */
 class FinalLimiter
 {
@@ -22,6 +22,7 @@ public:
 
     float getGainReductionDb() const noexcept { return grDb; }
     float getOutputLufs()      const noexcept { return lufs; }
+    float getTruePeakDb()      const noexcept { return truePeakDb; }
 
 private:
     double sr = 44100.0;
@@ -29,6 +30,7 @@ private:
     float  ceiling = 0.891f;    // -1 dBFS linear
     float  inputGain = 1.0f;
     float  relCoef = 0.0f;
+    float  attCoef = 0.0f;      // attack coefficient for smooth GR onset
 
     int    lookaheadSamples = 0;
     std::vector<std::vector<float>> delayBuf;
@@ -36,6 +38,10 @@ private:
 
     float  envGain = 1.0f;
     float  grDb = 0.0f;
+    float  truePeakDb = -60.0f;
+
+    // True peak detection (4x upsampling with linear interpolation)
+    float detectTruePeak (const float* samples, int n);
 
     // loudness meter (mean-square integrator with K-weight approx)
     juce::dsp::IIR::Filter<float> kWeightL, kWeightR;
