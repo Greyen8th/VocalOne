@@ -24,8 +24,7 @@ jobs:
 
       - name: Configure CMake
         run: |
-          cmake -B build \
-            -G Ninja \
+          cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DJUCE_DIR=../JUCE \
             -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
@@ -34,44 +33,21 @@ jobs:
         run: cmake --build build --parallel --config Release
 
       - name: Create installer zip
-        run: |
-          mkdir -p installer
+        run: bash scripts/create_installer.sh
 
-          VST3=$(find build -name "*.vst3" -type d | head -1)
-          AU=$(find build -name "*.component" -type d | head -1)
-
-          [ -n "$VST3" ] && cp -r "$VST3" installer/
-          [ -n "$AU"   ] && cp -r "$AU"   installer/
-
-          cat > installer/INSTALLA.command << 'INSTALL'
-#!/bin/bash
-DIR="$(cd "$(dirname "$0")" && pwd)"
-mkdir -p "$HOME/Library/Audio/Plug-Ins/VST3"
-mkdir -p "$HOME/Library/Audio/Plug-Ins/Components"
-
-VST3=$(find "$DIR" -name "*.vst3" -maxdepth 1 | head -1)
-AU=$(find "$DIR"  -name "*.component" -maxdepth 1 | head -1)
-
-[ -n "$VST3" ] && cp -r "$VST3" "$HOME/Library/Audio/Plug-Ins/VST3/"  && echo "✅ VST3 installato!"
-[ -n "$AU"   ] && cp -r "$AU"   "$HOME/Library/Audio/Plug-Ins/Components/" && echo "✅ Audio Unit installato!"
-
-echo ""
-echo "🎤 VocalOne installato! Riavvia il tuo DAW."
-echo "Premi INVIO per chiudere..."
-read
-INSTALL
-          chmod +x installer/INSTALLA.command
-
-          cd installer && zip -r ../VocalOne-macOS-1.0.0.zip . && cd ..
-          echo "=== ZIP ===" && ls -lh VocalOne-macOS-1.0.0.zip
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VocalOne-macOS-1.0.0
+          path: VocalOne-macOS-1.0.0.zip
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v1.0.0
-          name: "VocalOne v1.0.0 — One Plugin. Every Vocal."
+          name: "VocalOne v1.0.0 - One Plugin. Every Vocal."
           body: |
-            ## 🎤 VocalOne v1.0.0
+            ## VocalOne v1.0.0
 
             **Come installare:**
             1. Scarica `VocalOne-macOS-1.0.0.zip`
@@ -79,7 +55,7 @@ INSTALL
             3. Doppio click su `INSTALLA.command`
             4. Riavvia il DAW
 
-            **Compatibile con:** Logic Pro · Ableton · Pro Tools · Reaper · FL Studio
+            **Compatibile con:** Logic Pro, Ableton, Pro Tools, Reaper, FL Studio
             **Architetture:** Apple Silicon M1/M2/M3/M4 + Intel (Universal Binary)
           files: VocalOne-macOS-1.0.0.zip
           draft: false

@@ -18,3 +18,7 @@ cmake-build-*/
 # OS
 .DS_Store
 Thumbs.db
+
+# Installer output
+installer/
+VocalOne-macOS-*.zip
